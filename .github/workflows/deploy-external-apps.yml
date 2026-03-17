@@ -1,0 +1,467 @@
+name: Deploy External Applications
+
+on:
+  # Push/PR 触发由 studio 的 relay-deploy-external-apps.yml 转发
+  # 直接 dispatch（如 bloombergnew 等外部仓库触发）也使用此类型
+  repository_dispatch:
+    types: [deploy-external-app]
+
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "External app to deploy (app name or 'all')"
+        required: true
+        type: string
+        default: "all"
+
+concurrency:
+  group: deploy-external-${{ github.event.client_payload.sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  ECR_REGISTRY: 912951144733.dkr.ecr.us-west-2.amazonaws.com
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_env: ${{ steps.set-env.outputs.deploy_env }}
+      branch_clean: ${{ steps.set-env.outputs.branch_clean }}
+    steps:
+      - name: Determine deployment environment
+        id: set-env
+        run: |
+          ORIG_EVENT="${{ github.event_name }}"
+          if [ "$ORIG_EVENT" = "repository_dispatch" ]; then
+            ORIG_EVENT="${{ github.event.client_payload.event_name }}"
+          fi
+
+          if [ "$ORIG_EVENT" = "pull_request" ]; then
+            BRANCH="${{ github.event.client_payload.head_ref }}"
+            DEPLOY_ENV="preview"
+          elif [ "${{ github.event.client_payload.ref }}" = "refs/heads/main" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BRANCH="main"
+            DEPLOY_ENV="prod"
+          else
+            BRANCH="${{ github.event.client_payload.head_ref || 'main' }}"
+            DEPLOY_ENV="preview"
+          fi
+
+          BRANCH_CLEAN=$(echo "$BRANCH" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-30)
+
+          echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
+          echo "branch_clean=$BRANCH_CLEAN" >> $GITHUB_OUTPUT
+          echo "Deploy environment: $DEPLOY_ENV"
+
+  db-prepare:
+    needs: detect
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: tonormal/studio
+          token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
+          ref: ${{ github.event.client_payload.sha || 'main' }}
+
+      - name: Cache mise
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/mise
+          key: mise-${{ runner.os }}-${{ hashFiles('.mise/config.toml') }}
+
+      - name: Install mise
+        run: |
+          curl https://mise.run | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Setup mise
+        run: |
+          mise install
+
+      - name: Cache Ansible Galaxy dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ansible/roles
+            ~/.ansible/collections
+          key: ansible-galaxy-${{ hashFiles('ansible/requirements.yml') }}
+
+      - name: Install Ansible Galaxy dependencies
+        run: |
+          ansible-galaxy install -r ansible/requirements.yml
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.CI_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.CI_AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      - name: Load SSH key from Parameter Store
+        run: |
+          if [ "${{ needs.detect.outputs.deploy_env }}" = "prod" ]; then
+            PARAM_PATH="/studio-prod/"
+          else
+            PARAM_PATH="/studio-dev/"
+          fi
+
+          DEPLOY_SSH_KEY=$(aws ssm get-parameter --name "${PARAM_PATH}DEPLOY_SSH_KEY" --with-decryption --query "Parameter.Value" --output text)
+
+          mkdir -p ~/.ssh
+          echo "${DEPLOY_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+          echo "SSH key loaded (env: ${{ needs.detect.outputs.deploy_env }})"
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region us-west-2 | \
+            docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+      - name: Run db-prepare (ensure databases exist)
+        run: |
+          mise run deploy-db-prepare
+        env:
+          ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
+
+  deploy:
+    needs: [detect, db-prepare]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: tonormal/studio
+          token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
+          ref: ${{ github.event.client_payload.sha || 'main' }}
+          fetch-depth: 2
+
+      - name: Cache mise
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/mise
+          key: mise-${{ runner.os }}-${{ hashFiles('.mise/config.toml') }}
+
+      - name: Install mise
+        run: |
+          curl https://mise.run | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Setup mise
+        run: |
+          mise install
+
+      - name: Cache Ansible Galaxy dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ansible/roles
+            ~/.ansible/collections
+          key: ansible-galaxy-${{ hashFiles('ansible/requirements.yml') }}
+
+      - name: Install Ansible Galaxy dependencies
+        run: |
+          ansible-galaxy install -r ansible/requirements.yml
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.CI_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.CI_AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      - name: Load SSH key from Parameter Store
+        run: |
+          if [ "${{ needs.detect.outputs.deploy_env }}" = "prod" ]; then
+            PARAM_PATH="/studio-prod/"
+          else
+            PARAM_PATH="/studio-dev/"
+          fi
+
+          DEPLOY_SSH_KEY=$(aws ssm get-parameter --name "${PARAM_PATH}DEPLOY_SSH_KEY" --with-decryption --query "Parameter.Value" --output text)
+
+          mkdir -p ~/.ssh
+          echo "${DEPLOY_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+          echo "SSH key loaded (env: ${{ needs.detect.outputs.deploy_env }})"
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region us-west-2 | \
+            docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Determine deployment target
+        id: target
+        run: |
+          ORIG_EVENT="${{ github.event_name }}"
+          if [ "$ORIG_EVENT" = "repository_dispatch" ]; then
+            ORIG_EVENT="${{ github.event.client_payload.event_name }}"
+          fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            SERVICE="${{ inputs.service }}"
+          elif [ -n "${{ github.event.client_payload.service }}" ] && [ "$ORIG_EVENT" != "push" ] && [ "$ORIG_EVENT" != "pull_request" ]; then
+            # 直接 dispatch（如外部仓库触发）
+            SERVICE="${{ github.event.client_payload.service }}"
+            if [ -z "$SERVICE" ]; then
+              echo "Error: service not specified in webhook payload"
+              exit 1
+            fi
+          elif [ "$ORIG_EVENT" = "push" ] || [ "$ORIG_EVENT" = "pull_request" ]; then
+            # push/PR relay：检测变更的 external-apps
+            BEFORE_SHA="${{ github.event.client_payload.before }}"
+            AFTER_SHA="${{ github.event.client_payload.sha }}"
+
+            if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+              CHANGED_FILES=$(git diff --name-only ${BEFORE_SHA} ${AFTER_SHA} 2>/dev/null || git diff --name-only HEAD~1 HEAD)
+            else
+              CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+            fi
+
+            echo "Changed files:"
+            echo "$CHANGED_FILES"
+
+            CHANGED_APPS=""
+            for app_dir in external-apps/*/; do
+              app=$(basename "$app_dir")
+              if [ -f "${app_dir}build.sh" ] && echo "$CHANGED_FILES" | grep -q "^external-apps/${app}/"; then
+                CHANGED_APPS="${CHANGED_APPS} ${app}"
+              fi
+            done
+
+            CHANGED_APPS=$(echo "$CHANGED_APPS" | xargs)
+
+            if [ -z "$CHANGED_APPS" ]; then
+              echo "No external-apps changes detected, skipping deployment"
+              echo "skip=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            SERVICE="$CHANGED_APPS"
+            echo "Detected changes in: ${SERVICE}"
+          fi
+
+          echo "service=${SERVICE}" >> $GITHUB_OUTPUT
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "Deploying: ${SERVICE}"
+
+      - name: Deploy ${{ steps.target.outputs.service }}
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          SERVICE="${{ steps.target.outputs.service }}"
+
+          if [ "$SERVICE" = "all" ]; then
+            echo "Deploying all external apps..."
+            for app_dir in external-apps/*/; do
+              if [ -f "${app_dir}build.sh" ]; then
+                app=$(basename "$app_dir")
+                echo "Deploying ${app}..."
+                mise run build-${app}
+                mise run deploy-${app}
+              fi
+            done
+          else
+            echo "Deploying: ${SERVICE}"
+            for app in $SERVICE; do
+              echo "Deploying ${app}..."
+              mise run build-${app}
+              mise run deploy-${app}
+            done
+          fi
+        env:
+          DOCKER_BUILDKIT: 1
+          BUILDKIT_PROGRESS: plain
+          ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
+
+      - name: Run post-deploy hooks
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          SERVICE="${{ steps.target.outputs.service }}"
+
+          run_post_deploy() {
+            local app=$1
+            if [ -f "external-apps/${app}/post-deploy.sh" ]; then
+              echo "Running post-deploy for ${app}..."
+              mise run post-deploy-${app}
+            fi
+          }
+
+          if [ "$SERVICE" = "all" ]; then
+            for app_dir in external-apps/*/; do
+              if [ -f "${app_dir}build.sh" ]; then
+                app=$(basename "$app_dir")
+                run_post_deploy "$app"
+              fi
+            done
+          else
+            for app in $SERVICE; do
+              run_post_deploy "$app"
+            done
+          fi
+
+      - name: Deployment summary
+        if: always() && steps.target.outputs.skip != 'true'
+        run: |
+          SERVICE="${{ steps.target.outputs.service }}"
+
+          echo "### External App Deployment Result" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$SERVICE" = "all" ]; then
+            echo "**URLs:**" >> $GITHUB_STEP_SUMMARY
+            for app_dir in external-apps/*/; do
+              if [ -f "${app_dir}build.sh" ]; then
+                app=$(basename "$app_dir")
+                SUMMARY_FILE="${app_dir}deploy-dist/DEPLOY_SUMMARY.txt"
+                if [ -f "$SUMMARY_FILE" ]; then
+                  while IFS= read -r url; do
+                    echo "- [${url}](${url})" >> $GITHUB_STEP_SUMMARY
+                  done < "$SUMMARY_FILE"
+                fi
+              fi
+            done
+          else
+            echo "**URLs:**" >> $GITHUB_STEP_SUMMARY
+            for app in $SERVICE; do
+              SUMMARY_FILE="external-apps/${app}/deploy-dist/DEPLOY_SUMMARY.txt"
+              if [ -f "$SUMMARY_FILE" ]; then
+                while IFS= read -r url; do
+                  echo "- [${url}](${url})" >> $GITHUB_STEP_SUMMARY
+                done < "$SUMMARY_FILE"
+              fi
+            done
+          fi
+
+          echo "- Service: \`${SERVICE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Environment: \`${{ needs.detect.outputs.deploy_env }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Trigger: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ github.event_name }}" = "repository_dispatch" ] && [ -z "${{ github.event.client_payload.event_name }}" ]; then
+            echo "- Triggered by: Webhook" >> $GITHUB_STEP_SUMMARY
+            echo "- Source repo: ${{ github.event.client_payload.repository || 'N/A' }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- Triggered by: @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "- Commit: \`${{ github.event.client_payload.sha || github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload deploy summaries
+        if: |
+          github.event_name == 'repository_dispatch' &&
+          github.event.client_payload.event_name == 'pull_request' &&
+          steps.target.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-app-deploy-summaries
+          path: external-apps/*/deploy-dist/DEPLOY_SUMMARY.txt
+          if-no-files-found: ignore
+          retention-days: 1
+
+  comment:
+    needs: [detect, deploy]
+    if: |
+      github.event_name == 'repository_dispatch' &&
+      github.event.client_payload.event_name == 'pull_request' &&
+      needs.detect.outputs.deploy_env == 'preview'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download deploy summaries
+        uses: actions/download-artifact@v4
+        with:
+          name: external-app-deploy-summaries
+          path: summaries
+        continue-on-error: true
+
+      - name: Comment preview URLs on PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const branchClean = '${{ needs.detect.outputs.branch_clean }}';
+            const prNumber = parseInt('${{ github.event.client_payload.pr_number }}');
+
+            const urlLines = [];
+            const summariesDir = 'summaries';
+
+            if (fs.existsSync(summariesDir)) {
+              const walkDir = (dir) => {
+                if (!fs.existsSync(dir)) return;
+                const items = fs.readdirSync(dir, { withFileTypes: true });
+                for (const item of items) {
+                  const fullPath = path.join(dir, item.name);
+                  if (item.isDirectory()) {
+                    walkDir(fullPath);
+                  } else if (item.name === 'DEPLOY_SUMMARY.txt') {
+                    const deployDistDir = path.dirname(fullPath);
+                    const appDir = path.dirname(deployDistDir);
+                    const appName = path.basename(appDir);
+                    try {
+                      const content = fs.readFileSync(fullPath, 'utf8').trim();
+                      const urls = content.split('\n').filter(u => u.length > 0);
+                      if (urls.length === 1) {
+                        urlLines.push(`- **${appName}**: ${urls[0]}`);
+                      } else if (urls.length > 1) {
+                        urlLines.push(`- **${appName}**:`);
+                        urls.forEach(url => urlLines.push(`  - ${url}`));
+                      }
+                    } catch (e) {
+                      console.log(`Failed to read ${fullPath}: ${e.message}`);
+                    }
+                  }
+                }
+              };
+              walkDir(summariesDir);
+            }
+
+            if (urlLines.length === 0) {
+              console.log('No deploy summaries found, skipping PR comment');
+              return;
+            }
+
+            const body = `## External App Preview Deployment
+
+            Your changes have been deployed to the preview environment!
+
+            ### Preview URLs
+            ${urlLines.join('\n')}
+
+            ### Details
+            - **Branch**: \`${{ github.event.client_payload.head_ref }}\`
+            - **Commit**: \`${{ github.event.client_payload.sha }}\`
+            - **Environment**: preview
+
+            > Preview environments are automatically cleaned up when the PR is merged or closed.
+            `;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: 'tonormal',
+              repo: 'studio',
+              issue_number: prNumber,
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('External App Preview Deployment')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: 'tonormal',
+                repo: 'studio',
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: 'tonormal',
+                repo: 'studio',
+                issue_number: prNumber,
+                body: body
+              });
+            }
