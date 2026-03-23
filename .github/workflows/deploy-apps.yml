@@ -51,16 +51,17 @@ jobs:
       - name: Determine deployment environment
         id: set-env
         run: |
+          DEPLOY_REF="${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}"
           ORIG_EVENT="${{ github.event_name }}"
           if [ "$ORIG_EVENT" = "repository_dispatch" ]; then
             ORIG_EVENT="${{ github.event.client_payload.event_name }}"
           fi
 
           if [ "$ORIG_EVENT" = "pull_request" ]; then
-            BRANCH="${{ github.event.client_payload.head_ref }}"
+            BRANCH="$DEPLOY_REF"
             DEPLOY_ENV="preview"
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            BRANCH="${{ inputs.ref || 'main' }}"
+            BRANCH="$DEPLOY_REF"
             if [ "$BRANCH" = "main" ]; then
               DEPLOY_ENV="prod"
             else
@@ -70,7 +71,7 @@ jobs:
             BRANCH="main"
             DEPLOY_ENV="prod"
           else
-            BRANCH="${{ github.event.client_payload.head_ref || 'main' }}"
+            BRANCH="$DEPLOY_REF"
             DEPLOY_ENV="preview"
           fi
 
@@ -263,13 +264,32 @@ jobs:
           aws ecr get-login-password --region us-west-2 | \
             docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
 
+      - name: Verify branch context for db-prepare
+        run: |
+          echo "client_payload.deploy_ref=${{ github.event.client_payload.deploy_ref || '' }}"
+          echo "client_payload.head_ref=${{ github.event.client_payload.head_ref || '' }}"
+          echo "github.ref_name=${{ github.ref_name }}"
+          source scripts/build-lib.sh
+          unset DEPLOY_ENV CURRENT_BRANCH BRANCH_CLEAN CTX_DB_SUFFIX CTX_DNS_SUFFIX CTX_ROOT_DOMAIN CTX_ENV_PREFIX AWS_PARAM_PATH ANSIBLE_TARGET
+          detect_environment
+          echo "Resolved branch: $CURRENT_BRANCH"
+          echo "Resolved env: $DEPLOY_ENV"
+          echo "Resolved DB suffix: $CTX_DB_SUFFIX"
+          if [ "${{ needs.detect.outputs.deploy_env }}" = "preview" ] && [ -z "${CTX_DB_SUFFIX:-}" ]; then
+            echo "Preview deployment resolved without CTX_DB_SUFFIX"
+            exit 1
+          fi
+        env:
+          GITHUB_HEAD_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || '' }}
+          GITHUB_REF_NAME: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
+
       - name: Run db-prepare (ensure databases exist)
         run: |
           mise run deploy-db-prepare
         env:
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
-          GITHUB_HEAD_REF: ${{ github.event.client_payload.head_ref || '' }}
-          GITHUB_REF_NAME: ${{ github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
+          GITHUB_HEAD_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || '' }}
+          GITHUB_REF_NAME: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
 
   deploy:
     needs: [detect, db-prepare]
@@ -356,8 +376,8 @@ jobs:
           DOCKER_BUILDKIT: 1
           BUILDKIT_PROGRESS: plain
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
-          GITHUB_HEAD_REF: ${{ github.event.client_payload.head_ref || '' }}
-          GITHUB_REF_NAME: ${{ github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
+          GITHUB_HEAD_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || '' }}
+          GITHUB_REF_NAME: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
 
       - name: Run post-deploy hook
         if: hashFiles(format('js-apps/{0}/post-deploy.sh', matrix.service)) != ''
@@ -452,7 +472,7 @@ jobs:
             ${urlLines.join('\n')}
 
             ### Details
-            - **Branch**: \`${{ github.event.client_payload.head_ref }}\`
+            - **Branch**: \`${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref }}\`
             - **Commit**: \`${{ github.event.client_payload.sha }}\`
             - **Environment**: preview
 

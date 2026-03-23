@@ -113,6 +113,24 @@ jobs:
           aws ecr get-login-password --region us-west-2 | \
             docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
 
+      - name: Verify branch context for db-prepare
+        run: |
+          echo "inputs.ref=${{ inputs.ref || 'main' }}"
+          echo "github.ref_name=${{ github.ref_name }}"
+          source scripts/build-lib.sh
+          unset DEPLOY_ENV CURRENT_BRANCH BRANCH_CLEAN CTX_DB_SUFFIX CTX_DNS_SUFFIX CTX_ROOT_DOMAIN CTX_ENV_PREFIX AWS_PARAM_PATH ANSIBLE_TARGET
+          detect_environment
+          echo "Resolved branch: $CURRENT_BRANCH"
+          echo "Resolved env: $DEPLOY_ENV"
+          echo "Resolved DB suffix: $CTX_DB_SUFFIX"
+          if [ "${{ steps.env.outputs.deploy_env }}" = "preview" ] && [ -z "${CTX_DB_SUFFIX:-}" ]; then
+            echo "Preview deployment resolved without CTX_DB_SUFFIX"
+            exit 1
+          fi
+        env:
+          GITHUB_REF_NAME: ${{ inputs.ref || github.ref_name }}
+          GITHUB_HEAD_REF: ""
+
       - name: Run db-prepare
         run: |
           SERVER="${{ inputs.server }}"

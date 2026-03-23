@@ -36,13 +36,14 @@ jobs:
       - name: Determine environment
         id: env
         run: |
+          DEPLOY_REF="${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}"
           ORIG_EVENT="${{ github.event_name }}"
           if [ "$ORIG_EVENT" = "repository_dispatch" ]; then
             ORIG_EVENT="${{ github.event.client_payload.event_name }}"
           fi
 
           if [ "$ORIG_EVENT" = "pull_request" ]; then
-            BRANCH="${{ github.event.client_payload.head_ref }}"
+            BRANCH="$DEPLOY_REF"
             DEPLOY_ENV="preview"
             PARAM_PATH="/studio-dev/"
             OPERATION="deploy"
@@ -52,7 +53,7 @@ jobs:
             PARAM_PATH="/studio-prod/"
             OPERATION="deploy"
           else
-            BRANCH="${{ inputs.ref || github.ref_name }}"
+            BRANCH="$DEPLOY_REF"
             if [ "$BRANCH" = "main" ]; then
               DEPLOY_ENV="prod"
               PARAM_PATH="/studio-prod/"
@@ -124,8 +125,8 @@ jobs:
           fi
         env:
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
-          GITHUB_HEAD_REF: ${{ github.event.client_payload.head_ref || '' }}
-          GITHUB_REF_NAME: ${{ github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
+          GITHUB_HEAD_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || '' }}
+          GITHUB_REF_NAME: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
 
       - name: Summary
         if: always()
