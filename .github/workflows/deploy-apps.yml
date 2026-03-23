@@ -268,6 +268,7 @@ jobs:
         run: |
           echo "client_payload.deploy_ref=${{ github.event.client_payload.deploy_ref || '' }}"
           echo "client_payload.head_ref=${{ github.event.client_payload.head_ref || '' }}"
+          echo "STUDIO_DEPLOY_REF=${STUDIO_DEPLOY_REF:-}"
           echo "github.ref_name=${{ github.ref_name }}"
           source scripts/build-lib.sh
           unset DEPLOY_ENV CURRENT_BRANCH BRANCH_CLEAN CTX_DB_SUFFIX CTX_DNS_SUFFIX CTX_ROOT_DOMAIN CTX_ENV_PREFIX AWS_PARAM_PATH ANSIBLE_TARGET
@@ -280,16 +281,14 @@ jobs:
             exit 1
           fi
         env:
-          GITHUB_HEAD_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || '' }}
-          GITHUB_REF_NAME: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
+          STUDIO_DEPLOY_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
 
       - name: Run db-prepare (ensure databases exist)
         run: |
           mise run deploy-db-prepare
         env:
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
-          GITHUB_HEAD_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || '' }}
-          GITHUB_REF_NAME: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
+          STUDIO_DEPLOY_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
 
   deploy:
     needs: [detect, db-prepare]
@@ -376,8 +375,7 @@ jobs:
           DOCKER_BUILDKIT: 1
           BUILDKIT_PROGRESS: plain
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
-          GITHUB_HEAD_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || '' }}
-          GITHUB_REF_NAME: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
+          STUDIO_DEPLOY_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
 
       - name: Run post-deploy hook
         if: hashFiles(format('js-apps/{0}/post-deploy.sh', matrix.service)) != ''

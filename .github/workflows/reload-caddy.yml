@@ -125,8 +125,7 @@ jobs:
           fi
         env:
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
-          GITHUB_HEAD_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || '' }}
-          GITHUB_REF_NAME: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
+          STUDIO_DEPLOY_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
 
       - name: Summary
         if: always()

@@ -109,8 +109,7 @@ jobs:
         run: mise run sync-config
         env:
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
-          GITHUB_REF_NAME: ${{ inputs.ref || github.ref_name }}
-          GITHUB_HEAD_REF: ""
+          STUDIO_DEPLOY_REF: ${{ inputs.ref || github.ref_name }}
 
       - name: Deploy infrastructure
         run: |
@@ -121,8 +120,7 @@ jobs:
           fi
         env:
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
-          GITHUB_REF_NAME: ${{ inputs.ref || github.ref_name }}
-          GITHUB_HEAD_REF: ""
+          STUDIO_DEPLOY_REF: ${{ inputs.ref || github.ref_name }}
 
       - name: Deployment summary
         if: always()
