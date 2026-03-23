@@ -13,6 +13,11 @@ on:
         required: true
         type: string
         default: "all"
+      ref:
+        description: "Studio ref to deploy (main for prod, other branches for preview)"
+        required: false
+        type: string
+        default: "main"
 
 concurrency:
   group: deploy-external-${{ github.event.client_payload.sha || github.sha }}
@@ -39,7 +44,14 @@ jobs:
           if [ "$ORIG_EVENT" = "pull_request" ]; then
             BRANCH="${{ github.event.client_payload.head_ref }}"
             DEPLOY_ENV="preview"
-          elif [ "${{ github.event.client_payload.ref }}" = "refs/heads/main" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BRANCH="${{ inputs.ref || 'main' }}"
+            if [ "$BRANCH" = "main" ]; then
+              DEPLOY_ENV="prod"
+            else
+              DEPLOY_ENV="preview"
+            fi
+          elif [ "${{ github.event.client_payload.ref }}" = "refs/heads/main" ]; then
             BRANCH="main"
             DEPLOY_ENV="prod"
           else
@@ -61,7 +73,7 @@ jobs:
         with:
           repository: tonormal/studio
           token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
-          ref: ${{ github.event.client_payload.sha || 'main' }}
+          ref: ${{ github.event.client_payload.sha || inputs.ref || 'main' }}
 
       - name: Cache mise
         uses: actions/cache@v4
@@ -123,6 +135,8 @@ jobs:
           mise run deploy-db-prepare
         env:
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
+          GITHUB_HEAD_REF: ${{ github.event.client_payload.head_ref || '' }}
+          GITHUB_REF_NAME: ${{ github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
 
   deploy:
     needs: [detect, db-prepare]
@@ -132,8 +146,8 @@ jobs:
         with:
           repository: tonormal/studio
           token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
-          ref: ${{ github.event.client_payload.sha || 'main' }}
-          fetch-depth: 2
+          ref: ${{ github.event.client_payload.sha || inputs.ref || 'main' }}
+          fetch-depth: 0
 
       - name: Cache mise
         uses: actions/cache@v4
@@ -210,8 +224,13 @@ jobs:
               echo "Error: service not specified in webhook payload"
               exit 1
             fi
-          elif [ "$ORIG_EVENT" = "push" ] || [ "$ORIG_EVENT" = "pull_request" ]; then
-            # push/PR relay：检测变更的 external-apps
+          elif [ "$ORIG_EVENT" = "pull_request" ]; then
+            # PR relay：用 base_sha...head_sha 检测整个 PR 的 external-apps 变更
+            BASE_SHA="${{ github.event.client_payload.base_sha }}"
+            HEAD_SHA="${{ github.event.client_payload.sha }}"
+            CHANGED_FILES=$(git diff --name-only ${BASE_SHA}...${HEAD_SHA} 2>/dev/null || git diff --name-only HEAD~1 HEAD)
+          elif [ "$ORIG_EVENT" = "push" ]; then
+            # push relay：比较 before 和 after commit
             BEFORE_SHA="${{ github.event.client_payload.before }}"
             AFTER_SHA="${{ github.event.client_payload.sha }}"
 
@@ -275,6 +294,8 @@ jobs:
           DOCKER_BUILDKIT: 1
           BUILDKIT_PROGRESS: plain
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
+          GITHUB_HEAD_REF: ${{ github.event.client_payload.head_ref || '' }}
+          GITHUB_REF_NAME: ${{ github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
 
       - name: Run post-deploy hooks
         if: steps.target.outputs.skip != 'true'

@@ -11,8 +11,14 @@ on:
         options:
           - "all"
           - "auto"
+          - "preview"
           - "prod1"
           - "prod2"
+      ref:
+        description: "Studio ref to use (main for prod, other branches for preview)"
+        required: false
+        type: string
+        default: "main"
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -29,17 +35,19 @@ jobs:
         with:
           repository: tonormal/studio
           token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
+          ref: ${{ inputs.ref || 'main' }}
 
       - name: Determine environment
         id: env
         run: |
-          if [ "${{ github.ref_name }}" = "main" ]; then
+          if [ "${{ inputs.ref || 'main' }}" = "main" ]; then
             echo "deploy_env=prod" >> $GITHUB_OUTPUT
             echo "param_path=/studio-prod/" >> $GITHUB_OUTPUT
           else
             echo "deploy_env=preview" >> $GITHUB_OUTPUT
             echo "param_path=/studio-dev/" >> $GITHUB_OUTPUT
           fi
+          echo "ref=${{ inputs.ref || 'main' }}" >> $GITHUB_OUTPUT
 
       - name: Cache mise
         uses: actions/cache@v4
@@ -75,6 +83,21 @@ jobs:
           aws-secret-access-key: ${{ secrets.CI_AWS_SECRET_ACCESS_KEY }}
           aws-region: us-west-2
 
+      - name: Validate inputs
+        run: |
+          if [ "${{ steps.env.outputs.deploy_env }}" = "preview" ]; then
+            case "${{ inputs.server }}" in
+              auto|preview) ;;
+              *)
+                echo "preview refs only support server=auto or server=preview"
+                exit 1
+                ;;
+            esac
+          elif [ "${{ inputs.server }}" = "preview" ]; then
+            echo "server=preview requires a non-main ref"
+            exit 1
+          fi
+
       - name: Load SSH key from Parameter Store
         run: |
           DEPLOY_SSH_KEY=$(aws ssm get-parameter --name "${{ steps.env.outputs.param_path }}DEPLOY_SSH_KEY" --with-decryption --query "Parameter.Value" --output text)
@@ -95,6 +118,8 @@ jobs:
           SERVER="${{ inputs.server }}"
           if [ "$SERVER" = "auto" ]; then
             mise run deploy-db-prepare
+          elif [ "$SERVER" = "preview" ]; then
+            mise run deploy-db-prepare
           elif [ "$SERVER" = "all" ]; then
             echo "Running db-prepare on all active prod servers..."
             SERVERS=$(grep -A 100 "prod_servers:" ansible/inventory.yml | grep -E "^\s+prod[0-9]+:" | sed 's/://g' | awk '{print $1}')
@@ -107,6 +132,8 @@ jobs:
           fi
         env:
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
+          GITHUB_REF_NAME: ${{ inputs.ref || github.ref_name }}
+          GITHUB_HEAD_REF: ""
 
       - name: Summary
         if: always()
@@ -114,6 +141,7 @@ jobs:
           echo "### db-prepare Result" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- Environment: \`${{ steps.env.outputs.deploy_env }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Ref: \`${{ steps.env.outputs.ref }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Server: \`${{ inputs.server }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
           echo "- Triggered by: @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY

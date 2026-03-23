@@ -23,6 +23,18 @@ jobs:
   server-init:
     runs-on: ubuntu-latest
     steps:
+      - name: Determine credential path
+        id: env
+        run: |
+          case "${{ inputs.target }}" in
+            preview)
+              echo "param_path=/studio-dev/" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "param_path=/studio-prod/" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
       - uses: actions/checkout@v4
         with:
           repository: tonormal/studio
@@ -64,7 +76,7 @@ jobs:
 
       - name: Load SSH key from Parameter Store
         run: |
-          DEPLOY_SSH_KEY=$(aws ssm get-parameter --name "/studio-prod/DEPLOY_SSH_KEY" --with-decryption --query "Parameter.Value" --output text)
+          DEPLOY_SSH_KEY=$(aws ssm get-parameter --name "${{ steps.env.outputs.param_path }}DEPLOY_SSH_KEY" --with-decryption --query "Parameter.Value" --output text)
 
           mkdir -p ~/.ssh
           echo "${DEPLOY_SSH_KEY}" > ~/.ssh/id_rsa

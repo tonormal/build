@@ -1,11 +1,17 @@
-name: Reload Caddy Config
+name: Sync Caddy
 
 on:
-  # Push 触发由 studio 的 relay-reload-caddy.yml 转发
+  # Push/PR 触发由 studio 的 relay-reload-caddy.yml 转发
   repository_dispatch:
     types: [reload-caddy]
 
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Studio ref to use (main for prod, other branches for preview)"
+        required: false
+        type: string
+        default: "main"
 
 concurrency:
   group: deploy-caddy-${{ github.event.client_payload.sha || github.sha }}
@@ -15,14 +21,55 @@ env:
   ECR_REGISTRY: 912951144733.dkr.ecr.us-west-2.amazonaws.com
 
 jobs:
-  reload-caddy:
+  sync-caddy:
     runs-on: ubuntu-latest
+    outputs:
+      deploy_env: ${{ steps.env.outputs.deploy_env }}
+      operation: ${{ steps.env.outputs.operation }}
     steps:
       - uses: actions/checkout@v4
         with:
           repository: tonormal/studio
           token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
-          ref: ${{ github.event.client_payload.sha || 'main' }}
+          ref: ${{ github.event.client_payload.sha || inputs.ref || 'main' }}
+
+      - name: Determine environment
+        id: env
+        run: |
+          ORIG_EVENT="${{ github.event_name }}"
+          if [ "$ORIG_EVENT" = "repository_dispatch" ]; then
+            ORIG_EVENT="${{ github.event.client_payload.event_name }}"
+          fi
+
+          if [ "$ORIG_EVENT" = "pull_request" ]; then
+            BRANCH="${{ github.event.client_payload.head_ref }}"
+            DEPLOY_ENV="preview"
+            PARAM_PATH="/studio-dev/"
+            OPERATION="deploy"
+          elif [ "${{ github.event.client_payload.ref }}" = "refs/heads/main" ]; then
+            BRANCH="main"
+            DEPLOY_ENV="prod"
+            PARAM_PATH="/studio-prod/"
+            OPERATION="deploy"
+          else
+            BRANCH="${{ inputs.ref || github.ref_name }}"
+            if [ "$BRANCH" = "main" ]; then
+              DEPLOY_ENV="prod"
+              PARAM_PATH="/studio-prod/"
+            else
+              DEPLOY_ENV="preview"
+              PARAM_PATH="/studio-dev/"
+            fi
+            OPERATION="reload"
+          fi
+
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
+          echo "param_path=$PARAM_PATH" >> $GITHUB_OUTPUT
+          echo "operation=$OPERATION" >> $GITHUB_OUTPUT
+          echo "Environment: $DEPLOY_ENV"
+          echo "Branch: $BRANCH"
+          echo "Operation: $OPERATION"
 
       - name: Cache mise
         uses: actions/cache@v4
@@ -60,25 +107,33 @@ jobs:
 
       - name: Load SSH key from Parameter Store
         run: |
-          DEPLOY_SSH_KEY=$(aws ssm get-parameter --name "/studio-prod/DEPLOY_SSH_KEY" --with-decryption --query "Parameter.Value" --output text)
+          DEPLOY_SSH_KEY=$(aws ssm get-parameter --name "${{ steps.env.outputs.param_path }}DEPLOY_SSH_KEY" --with-decryption --query "Parameter.Value" --output text)
 
           mkdir -p ~/.ssh
           echo "${DEPLOY_SSH_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-          echo "SSH key loaded"
+          echo "SSH key loaded (env: ${{ steps.env.outputs.deploy_env }})"
 
-      - name: Reload Caddy config
+      - name: Sync Caddy
         run: |
-          mise run reload-caddy
+          if [ "${{ steps.env.outputs.operation }}" = "deploy" ]; then
+            mise run deploy-caddy
+          else
+            mise run reload-caddy
+          fi
         env:
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
+          GITHUB_HEAD_REF: ${{ github.event.client_payload.head_ref || '' }}
+          GITHUB_REF_NAME: ${{ github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
 
       - name: Summary
         if: always()
         run: |
-          echo "### Caddy Config Reload" >> $GITHUB_STEP_SUMMARY
+          echo "### Caddy Sync" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Environment: \`${{ steps.env.outputs.deploy_env }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Operation: \`${{ steps.env.outputs.operation }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
           echo "- Trigger: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
           echo "- Commit: \`${{ github.event.client_payload.sha || github.sha }}\`" >> $GITHUB_STEP_SUMMARY

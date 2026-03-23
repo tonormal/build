@@ -20,6 +20,11 @@ on:
           - "storefront"
           - "admin"
           - "api"
+      ref:
+        description: "Studio ref to deploy (main for prod, other branches for preview)"
+        required: false
+        type: string
+        default: "main"
 
 concurrency:
   group: deploy-apps-${{ github.event.client_payload.sha || github.sha }}
@@ -41,7 +46,7 @@ jobs:
           repository: tonormal/studio
           token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
           fetch-depth: 0
-          ref: ${{ github.event.client_payload.sha || 'main' }}
+          ref: ${{ github.event.client_payload.sha || inputs.ref || 'main' }}
 
       - name: Determine deployment environment
         id: set-env
@@ -54,7 +59,14 @@ jobs:
           if [ "$ORIG_EVENT" = "pull_request" ]; then
             BRANCH="${{ github.event.client_payload.head_ref }}"
             DEPLOY_ENV="preview"
-          elif [ "${{ github.event.client_payload.ref }}" = "refs/heads/main" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BRANCH="${{ inputs.ref || 'main' }}"
+            if [ "$BRANCH" = "main" ]; then
+              DEPLOY_ENV="prod"
+            else
+              DEPLOY_ENV="preview"
+            fi
+          elif [ "${{ github.event.client_payload.ref }}" = "refs/heads/main" ]; then
             BRANCH="main"
             DEPLOY_ENV="prod"
           else
@@ -194,7 +206,7 @@ jobs:
         with:
           repository: tonormal/studio
           token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
-          ref: ${{ github.event.client_payload.sha || 'main' }}
+          ref: ${{ github.event.client_payload.sha || inputs.ref || 'main' }}
 
       - name: Cache mise
         uses: actions/cache@v4
@@ -256,6 +268,8 @@ jobs:
           mise run deploy-db-prepare
         env:
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
+          GITHUB_HEAD_REF: ${{ github.event.client_payload.head_ref || '' }}
+          GITHUB_REF_NAME: ${{ github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
 
   deploy:
     needs: [detect, db-prepare]
@@ -270,7 +284,7 @@ jobs:
         with:
           repository: tonormal/studio
           token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
-          ref: ${{ github.event.client_payload.sha || 'main' }}
+          ref: ${{ github.event.client_payload.sha || inputs.ref || 'main' }}
 
       - name: Cache mise
         uses: actions/cache@v4
@@ -342,6 +356,8 @@ jobs:
           DOCKER_BUILDKIT: 1
           BUILDKIT_PROGRESS: plain
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
+          GITHUB_HEAD_REF: ${{ github.event.client_payload.head_ref || '' }}
+          GITHUB_REF_NAME: ${{ github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
 
       - name: Run post-deploy hook
         if: hashFiles(format('js-apps/{0}/post-deploy.sh', matrix.service)) != ''

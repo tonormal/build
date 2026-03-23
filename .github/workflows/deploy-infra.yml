@@ -13,6 +13,11 @@ on:
           - "redis"
           - "caddy"
           - "backup"
+      ref:
+        description: "Studio ref to deploy (main for prod, other branches for preview)"
+        required: false
+        type: string
+        default: "main"
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -25,10 +30,24 @@ jobs:
   deploy-infra:
     runs-on: ubuntu-latest
     steps:
+      - name: Determine environment
+        id: env
+        run: |
+          BRANCH="${{ inputs.ref || 'main' }}"
+          if [ "$BRANCH" = "main" ]; then
+            echo "deploy_env=prod" >> $GITHUB_OUTPUT
+            echo "param_path=/studio-prod/" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_env=preview" >> $GITHUB_OUTPUT
+            echo "param_path=/studio-dev/" >> $GITHUB_OUTPUT
+          fi
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+
       - uses: actions/checkout@v4
         with:
           repository: tonormal/studio
           token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
+          ref: ${{ inputs.ref || 'main' }}
 
       - name: Cache mise
         uses: actions/cache@v4
@@ -64,15 +83,22 @@ jobs:
           aws-secret-access-key: ${{ secrets.CI_AWS_SECRET_ACCESS_KEY }}
           aws-region: us-west-2
 
+      - name: Validate inputs
+        run: |
+          if [ "${{ steps.env.outputs.deploy_env }}" != "prod" ] && [ "${{ inputs.service }}" = "backup" ]; then
+            echo "backup service is production-only; choose ref=main or a different service"
+            exit 1
+          fi
+
       - name: Load SSH key from Parameter Store
         run: |
-          DEPLOY_SSH_KEY=$(aws ssm get-parameter --name "/studio-prod/DEPLOY_SSH_KEY" --with-decryption --query "Parameter.Value" --output text)
+          DEPLOY_SSH_KEY=$(aws ssm get-parameter --name "${{ steps.env.outputs.param_path }}DEPLOY_SSH_KEY" --with-decryption --query "Parameter.Value" --output text)
 
           mkdir -p ~/.ssh
           echo "${DEPLOY_SSH_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-          echo "SSH key loaded"
+          echo "SSH key loaded (env: ${{ steps.env.outputs.deploy_env }})"
 
       - name: Login to ECR
         run: |
@@ -83,6 +109,8 @@ jobs:
         run: mise run sync-config
         env:
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
+          GITHUB_REF_NAME: ${{ inputs.ref || github.ref_name }}
+          GITHUB_HEAD_REF: ""
 
       - name: Deploy infrastructure
         run: |
@@ -93,12 +121,16 @@ jobs:
           fi
         env:
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
+          GITHUB_REF_NAME: ${{ inputs.ref || github.ref_name }}
+          GITHUB_HEAD_REF: ""
 
       - name: Deployment summary
         if: always()
         run: |
           echo "### Infrastructure Deployment Result" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Environment: \`${{ steps.env.outputs.deploy_env }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Ref: \`${{ steps.env.outputs.branch }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Service: \`${{ inputs.service }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
           echo "- Triggered by: @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
