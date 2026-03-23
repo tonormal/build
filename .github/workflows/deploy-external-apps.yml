@@ -32,14 +32,26 @@ jobs:
     outputs:
       deploy_env: ${{ steps.set-env.outputs.deploy_env }}
       branch_clean: ${{ steps.set-env.outputs.branch_clean }}
+      deploy_ref: ${{ steps.set-env.outputs.deploy_ref }}
+      checkout_ref: ${{ steps.set-env.outputs.checkout_ref }}
+      dispatch_mode: ${{ steps.set-env.outputs.dispatch_mode }}
     steps:
       - name: Determine deployment environment
         id: set-env
         run: |
           DEPLOY_REF="${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}"
+          PAYLOAD_REF="${{ github.event.client_payload.ref || '' }}"
+          PAYLOAD_EVENT="${{ github.event.client_payload.event_name || '' }}"
+          DISPATCH_MODE="relay"
+          CHECKOUT_REF="${{ github.event.client_payload.sha || inputs.ref || 'main' }}"
+
           ORIG_EVENT="${{ github.event_name }}"
           if [ "$ORIG_EVENT" = "repository_dispatch" ]; then
-            ORIG_EVENT="${{ github.event.client_payload.event_name }}"
+            ORIG_EVENT="$PAYLOAD_EVENT"
+            if [ -z "$ORIG_EVENT" ]; then
+              DISPATCH_MODE="direct"
+              CHECKOUT_REF="${{ github.event.client_payload.studio_sha || github.event.client_payload.deploy_ref || 'main' }}"
+            fi
           fi
 
           if [ "$ORIG_EVENT" = "pull_request" ]; then
@@ -52,9 +64,17 @@ jobs:
             else
               DEPLOY_ENV="preview"
             fi
-          elif [ "${{ github.event.client_payload.ref }}" = "refs/heads/main" ]; then
+          elif [ "$PAYLOAD_REF" = "refs/heads/main" ]; then
             BRANCH="main"
             DEPLOY_ENV="prod"
+          elif [ "$DISPATCH_MODE" = "direct" ]; then
+            BRANCH="${DEPLOY_REF:-main}"
+            if [ -z "$BRANCH" ] || [ "$BRANCH" = "main" ]; then
+              BRANCH="main"
+              DEPLOY_ENV="prod"
+            else
+              DEPLOY_ENV="preview"
+            fi
           else
             BRANCH="$DEPLOY_REF"
             DEPLOY_ENV="preview"
@@ -64,17 +84,25 @@ jobs:
 
           echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
           echo "branch_clean=$BRANCH_CLEAN" >> $GITHUB_OUTPUT
+          echo "deploy_ref=$BRANCH" >> $GITHUB_OUTPUT
+          echo "checkout_ref=$CHECKOUT_REF" >> $GITHUB_OUTPUT
+          echo "dispatch_mode=$DISPATCH_MODE" >> $GITHUB_OUTPUT
+          echo "Dispatch mode: $DISPATCH_MODE"
           echo "Deploy environment: $DEPLOY_ENV"
+          echo "Checkout ref: $CHECKOUT_REF"
 
   db-prepare:
     needs: detect
     runs-on: ubuntu-latest
+    concurrency:
+      group: db-prepare-${{ needs.detect.outputs.deploy_env }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
           repository: tonormal/studio
           token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
-          ref: ${{ github.event.client_payload.sha || inputs.ref || 'main' }}
+          ref: ${{ needs.detect.outputs.checkout_ref }}
 
       - name: Cache mise
         uses: actions/cache@v4
@@ -133,6 +161,7 @@ jobs:
 
       - name: Verify branch context for db-prepare
         run: |
+          echo "dispatch_mode=${{ needs.detect.outputs.dispatch_mode }}"
           echo "client_payload.deploy_ref=${{ github.event.client_payload.deploy_ref || '' }}"
           echo "client_payload.head_ref=${{ github.event.client_payload.head_ref || '' }}"
           echo "STUDIO_DEPLOY_REF=${STUDIO_DEPLOY_REF:-}"
@@ -148,14 +177,14 @@ jobs:
             exit 1
           fi
         env:
-          STUDIO_DEPLOY_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
+          STUDIO_DEPLOY_REF: ${{ needs.detect.outputs.deploy_ref }}
 
       - name: Run db-prepare (ensure databases exist)
         run: |
           mise run deploy-db-prepare
         env:
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
-          STUDIO_DEPLOY_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
+          STUDIO_DEPLOY_REF: ${{ needs.detect.outputs.deploy_ref }}
 
   deploy:
     needs: [detect, db-prepare]
@@ -165,7 +194,7 @@ jobs:
         with:
           repository: tonormal/studio
           token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
-          ref: ${{ github.event.client_payload.sha || inputs.ref || 'main' }}
+          ref: ${{ needs.detect.outputs.checkout_ref }}
           fetch-depth: 0
 
       - name: Cache mise
@@ -313,7 +342,7 @@ jobs:
           DOCKER_BUILDKIT: 1
           BUILDKIT_PROGRESS: plain
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
-          STUDIO_DEPLOY_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
+          STUDIO_DEPLOY_REF: ${{ needs.detect.outputs.deploy_ref }}
 
       - name: Run post-deploy hooks
         if: steps.target.outputs.skip != 'true'
@@ -376,6 +405,8 @@ jobs:
 
           echo "- Service: \`${SERVICE}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Environment: \`${{ needs.detect.outputs.deploy_env }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Studio ref: \`${{ needs.detect.outputs.deploy_ref }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Dispatch mode: \`${{ needs.detect.outputs.dispatch_mode }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
           echo "- Trigger: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
 

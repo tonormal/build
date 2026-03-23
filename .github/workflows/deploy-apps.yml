@@ -202,6 +202,9 @@ jobs:
     needs: detect
     if: needs.detect.outputs.matrix != '{"include":[]}'
     runs-on: ubuntu-latest
+    concurrency:
+      group: db-prepare-${{ needs.detect.outputs.deploy_env }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:

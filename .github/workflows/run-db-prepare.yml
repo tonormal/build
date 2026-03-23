@@ -30,6 +30,9 @@ env:
 jobs:
   run-db-prepare:
     runs-on: ubuntu-latest
+    concurrency:
+      group: db-prepare-${{ inputs.ref == 'main' && 'prod' || 'preview' }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
