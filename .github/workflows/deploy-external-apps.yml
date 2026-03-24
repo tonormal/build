@@ -319,6 +319,38 @@ jobs:
         if: steps.target.outputs.skip != 'true'
         run: |
           SERVICE="${{ steps.target.outputs.service }}"
+          SOURCE_REPOSITORY="${SOURCE_REPOSITORY:-}"
+          SOURCE_REF="${SOURCE_REF:-}"
+          SOURCE_SHA="${SOURCE_SHA:-}"
+
+          clear_external_source_env() {
+            unset JANT_SOURCE_REPO_URL JANT_SOURCE_REF JANT_SOURCE_SHA
+            unset JANT_CLOUD_SOURCE_REPO_URL JANT_CLOUD_SOURCE_REF JANT_CLOUD_SOURCE_SHA
+          }
+
+          configure_external_source_env() {
+            local app="$1"
+            local source_repo_url=""
+
+            clear_external_source_env
+
+            if [ -n "$SOURCE_REPOSITORY" ]; then
+              source_repo_url="https://github.com/${SOURCE_REPOSITORY}.git"
+            fi
+
+            case "$app" in
+              jant)
+                [ -n "$source_repo_url" ] && export JANT_SOURCE_REPO_URL="$source_repo_url"
+                [ -n "$SOURCE_REF" ] && export JANT_SOURCE_REF="$SOURCE_REF"
+                [ -n "$SOURCE_SHA" ] && export JANT_SOURCE_SHA="$SOURCE_SHA"
+                ;;
+              jant-cloud)
+                [ -n "$source_repo_url" ] && export JANT_CLOUD_SOURCE_REPO_URL="$source_repo_url"
+                [ -n "$SOURCE_REF" ] && export JANT_CLOUD_SOURCE_REF="$SOURCE_REF"
+                [ -n "$SOURCE_SHA" ] && export JANT_CLOUD_SOURCE_SHA="$SOURCE_SHA"
+                ;;
+            esac
+          }
 
           if [ "$SERVICE" = "all" ]; then
             echo "Deploying all external apps..."
@@ -326,6 +358,7 @@ jobs:
               if [ -f "${app_dir}build.sh" ]; then
                 app=$(basename "$app_dir")
                 echo "Deploying ${app}..."
+                configure_external_source_env "$app"
                 mise run build-${app}
                 mise run deploy-${app}
               fi
@@ -334,6 +367,7 @@ jobs:
             echo "Deploying: ${SERVICE}"
             for app in $SERVICE; do
               echo "Deploying ${app}..."
+              configure_external_source_env "$app"
               mise run build-${app}
               mise run deploy-${app}
             done
@@ -343,6 +377,9 @@ jobs:
           BUILDKIT_PROGRESS: plain
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
           STUDIO_DEPLOY_REF: ${{ needs.detect.outputs.deploy_ref }}
+          SOURCE_REPOSITORY: ${{ github.event.client_payload.source_repository || '' }}
+          SOURCE_REF: ${{ github.event.client_payload.source_ref || '' }}
+          SOURCE_SHA: ${{ github.event.client_payload.source_sha || github.event.client_payload.sha || '' }}
 
       - name: Run post-deploy hooks
         if: steps.target.outputs.skip != 'true'
