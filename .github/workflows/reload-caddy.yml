@@ -36,7 +36,7 @@ jobs:
           token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
           ref: ${{ github.event.client_payload.sha || inputs.ref || 'main' }}
 
-      - name: Determine environment
+      - name: Determine environment and operation
         id: env
         run: |
           DEPLOY_REF="${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}"
@@ -45,16 +45,29 @@ jobs:
             ORIG_EVENT="${{ github.event.client_payload.event_name }}"
           fi
 
+          OPERATION="reload"
+          CHANGED_FILES=""
+
           if [ "$ORIG_EVENT" = "pull_request" ]; then
             BRANCH="$DEPLOY_REF"
             DEPLOY_ENV="preview"
             PARAM_PATH="/studio-dev/"
-            OPERATION="deploy"
+            BASE_SHA="${{ github.event.client_payload.base_sha }}"
+            HEAD_SHA="${{ github.event.client_payload.sha }}"
+            if [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ]; then
+              CHANGED_FILES="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" 2>/dev/null || true)"
+            fi
           elif [ "${{ github.event.client_payload.ref }}" = "refs/heads/main" ]; then
             BRANCH="main"
             DEPLOY_ENV="prod"
             PARAM_PATH="/studio-prod/"
-            OPERATION="deploy"
+            BEFORE_SHA="${{ github.event.client_payload.before || '' }}"
+            AFTER_SHA="${{ github.event.client_payload.sha || '' }}"
+            if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && [ -n "$AFTER_SHA" ]; then
+              CHANGED_FILES="$(git diff --name-only "${BEFORE_SHA}" "${AFTER_SHA}" 2>/dev/null || true)"
+            elif [ -n "$AFTER_SHA" ]; then
+              CHANGED_FILES="$(git diff-tree --no-commit-id --name-only -r "$AFTER_SHA" 2>/dev/null || true)"
+            fi
           else
             BRANCH="$DEPLOY_REF"
             if [ "$BRANCH" = "main" ]; then
@@ -65,6 +78,31 @@ jobs:
               PARAM_PATH="/studio-dev/"
             fi
             OPERATION="reload"
+          fi
+
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Changed files:"
+            echo "$CHANGED_FILES"
+
+            NEED_DEPLOY="false"
+            while IFS= read -r file; do
+              [ -n "$file" ] || continue
+
+              case "$file" in
+                infra-apps/caddy/src/config/*)
+                  ;;
+                infra-apps/caddy/*)
+                  NEED_DEPLOY="true"
+                  break
+                  ;;
+              esac
+            done <<< "$CHANGED_FILES"
+
+            if [ "$NEED_DEPLOY" = "true" ]; then
+              OPERATION="deploy"
+            else
+              OPERATION="reload"
+            fi
           fi
 
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT

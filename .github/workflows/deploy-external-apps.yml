@@ -363,6 +363,8 @@ jobs:
                 [ -n "$SOURCE_SHA" ] && export JANT_CLOUD_SOURCE_SHA="$SOURCE_SHA"
                 ;;
             esac
+
+            return 0
           }
 
           if [ "$SERVICE" = "all" ]; then
