@@ -1,4 +1,6 @@
 name: Sync Caddy
+run-name: >-
+  Caddy · ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name || 'main' }} · @${{ github.actor }}
 
 on:
   # Push/PR 触发由 studio 的 relay-reload-caddy.yml 转发
@@ -22,6 +24,7 @@ env:
 
 jobs:
   sync-caddy:
+    name: Sync Caddy
     runs-on: ubuntu-latest
     outputs:
       deploy_env: ${{ steps.env.outputs.deploy_env }}

@@ -1,4 +1,8 @@
 name: Deploy External Applications
+run-name: >-
+  External · ${{ github.event.client_payload.service || inputs.service || 'all' }} ·
+  ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || github.event.client_payload.source_ref || inputs.ref || github.ref_name || 'main' }} ·
+  @${{ github.actor }}
 
 on:
   # Push/PR 触发由 studio 的 relay-deploy-external-apps.yml 转发
@@ -28,6 +32,7 @@ env:
 
 jobs:
   detect:
+    name: Detect · ${{ github.event.client_payload.service || inputs.service || 'all' }}
     runs-on: ubuntu-latest
     outputs:
       deploy_env: ${{ steps.set-env.outputs.deploy_env }}
@@ -39,7 +44,7 @@ jobs:
       - name: Determine deployment environment
         id: set-env
         run: |
-          DEPLOY_REF="${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}"
+          DEPLOY_REF="${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || github.event.client_payload.source_ref || inputs.ref || github.ref_name }}"
           PAYLOAD_REF="${{ github.event.client_payload.ref || '' }}"
           PAYLOAD_EVENT="${{ github.event.client_payload.event_name || '' }}"
           DISPATCH_MODE="relay"
@@ -92,6 +97,7 @@ jobs:
           echo "Checkout ref: $CHECKOUT_REF"
 
   db-prepare:
+    name: DB Prepare · ${{ needs.detect.outputs.deploy_env }} · ${{ github.event.client_payload.service || inputs.service || 'all' }}
     needs: detect
     runs-on: ubuntu-latest
     concurrency:
@@ -187,6 +193,7 @@ jobs:
           STUDIO_DEPLOY_REF: ${{ needs.detect.outputs.deploy_ref }}
 
   deploy:
+    name: Deploy · ${{ github.event.client_payload.service || inputs.service || 'all' }} · ${{ needs.detect.outputs.deploy_env }}
     needs: [detect, db-prepare]
     runs-on: ubuntu-latest
     steps:
@@ -287,14 +294,16 @@ jobs:
             else
               CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
             fi
+          fi
 
+          if [ "$ORIG_EVENT" = "pull_request" ] || [ "$ORIG_EVENT" = "push" ]; then
             echo "Changed files:"
             echo "$CHANGED_FILES"
 
             CHANGED_APPS=""
             for app_dir in external-apps/*/; do
               app=$(basename "$app_dir")
-              if [ -f "${app_dir}build.sh" ] && echo "$CHANGED_FILES" | grep -q "^external-apps/${app}/"; then
+              if bash scripts/external-app-type.sh "${app_dir}" > /dev/null 2>&1 && echo "$CHANGED_FILES" | grep -q "^external-apps/${app}/"; then
                 CHANGED_APPS="${CHANGED_APPS} ${app}"
               fi
             done
@@ -359,7 +368,7 @@ jobs:
           if [ "$SERVICE" = "all" ]; then
             echo "Deploying all external apps..."
             for app_dir in external-apps/*/; do
-              if [ -f "${app_dir}build.sh" ]; then
+              if bash scripts/external-app-type.sh "${app_dir}" > /dev/null 2>&1; then
                 app=$(basename "$app_dir")
                 echo "Deploying ${app}..."
                 configure_external_source_env "$app"
@@ -381,8 +390,8 @@ jobs:
           BUILDKIT_PROGRESS: plain
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
           STUDIO_DEPLOY_REF: ${{ needs.detect.outputs.deploy_ref }}
-          SOURCE_REPOSITORY: ${{ github.event.client_payload.source_repository || '' }}
-          SOURCE_REF: ${{ github.event.client_payload.source_ref || '' }}
+          SOURCE_REPOSITORY: ${{ github.event.client_payload.source_repository || github.event.client_payload.repository || '' }}
+          SOURCE_REF: ${{ github.event.client_payload.source_ref || github.event.client_payload.deploy_ref || '' }}
           SOURCE_SHA: ${{ github.event.client_payload.source_sha || github.event.client_payload.sha || '' }}
 
       - name: Run post-deploy hooks
@@ -400,7 +409,7 @@ jobs:
 
           if [ "$SERVICE" = "all" ]; then
             for app_dir in external-apps/*/; do
-              if [ -f "${app_dir}build.sh" ]; then
+              if bash scripts/external-app-type.sh "${app_dir}" > /dev/null 2>&1; then
                 app=$(basename "$app_dir")
                 run_post_deploy "$app"
               fi
@@ -421,10 +430,12 @@ jobs:
 
           if [ "$SERVICE" = "all" ]; then
             echo "**URLs:**" >> $GITHUB_STEP_SUMMARY
+            source scripts/external-app-lib.sh
             for app_dir in external-apps/*/; do
-              if [ -f "${app_dir}build.sh" ]; then
+              if bash scripts/external-app-type.sh "${app_dir}" > /dev/null 2>&1; then
                 app=$(basename "$app_dir")
-                SUMMARY_FILE="${app_dir}deploy-dist/DEPLOY_SUMMARY.txt"
+                SUMMARY_DIR="$(get_external_app_work_dir "$app" "$PWD")"
+                SUMMARY_FILE="${SUMMARY_DIR}/deploy-dist/DEPLOY_SUMMARY.txt"
                 if [ -f "$SUMMARY_FILE" ]; then
                   while IFS= read -r url; do
                     echo "- [${url}](${url})" >> $GITHUB_STEP_SUMMARY
@@ -434,8 +445,10 @@ jobs:
             done
           else
             echo "**URLs:**" >> $GITHUB_STEP_SUMMARY
+            source scripts/external-app-lib.sh
             for app in $SERVICE; do
-              SUMMARY_FILE="external-apps/${app}/deploy-dist/DEPLOY_SUMMARY.txt"
+              SUMMARY_DIR="$(get_external_app_work_dir "$app" "$PWD")"
+              SUMMARY_FILE="${SUMMARY_DIR}/deploy-dist/DEPLOY_SUMMARY.txt"
               if [ -f "$SUMMARY_FILE" ]; then
                 while IFS= read -r url; do
                   echo "- [${url}](${url})" >> $GITHUB_STEP_SUMMARY
@@ -464,11 +477,14 @@ jobs:
         if: |
           github.event_name == 'repository_dispatch' &&
           github.event.client_payload.event_name == 'pull_request' &&
+          github.event.client_payload.pr_number != '' &&
           steps.target.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: external-app-deploy-summaries
-          path: external-apps/*/deploy-dist/DEPLOY_SUMMARY.txt
+          path: |
+            external-apps/*/deploy-dist/DEPLOY_SUMMARY.txt
+            .external-apps/*/deploy-dist/DEPLOY_SUMMARY.txt
           if-no-files-found: ignore
           retention-days: 1
 
@@ -477,6 +493,7 @@ jobs:
     if: |
       github.event_name == 'repository_dispatch' &&
       github.event.client_payload.event_name == 'pull_request' &&
+      github.event.client_payload.pr_number != '' &&
       needs.detect.outputs.deploy_env == 'preview'
     runs-on: ubuntu-latest
     steps:

@@ -1,4 +1,6 @@
 name: Server Init
+run-name: >-
+  Server Init · ${{ inputs.target || 'all' }} · update=${{ inputs.force_system_update && 'yes' || 'no' }} · @${{ github.actor }}
 
 on:
   workflow_dispatch:
@@ -21,6 +23,7 @@ on:
 
 jobs:
   server-init:
+    name: Server Init · ${{ inputs.target || 'all' }}
     runs-on: ubuntu-latest
     steps:
       - name: Determine credential path

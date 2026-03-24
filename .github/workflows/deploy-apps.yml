@@ -1,4 +1,8 @@
 name: Deploy Applications
+run-name: >-
+  Apps · ${{ github.event.client_payload.target || inputs.target || 'auto' }} ·
+  ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name || 'main' }} ·
+  @${{ github.actor }}
 
 on:
   # Push/PR 触发由 studio 的 relay-deploy-apps.yml 转发
@@ -35,6 +39,7 @@ env:
 
 jobs:
   detect:
+    name: Detect · ${{ github.event.client_payload.target || inputs.target || 'auto' }}
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
@@ -143,7 +148,7 @@ jobs:
 
           get_deploy_server() {
             local svc="$1"
-            local env_file="js-apps/${svc}/.env.example"
+            local env_file="js-apps/${svc}/.env.tpl"
             if [ -f "$env_file" ]; then
               grep -E "^DEPLOY_SERVER=" "$env_file" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || true
             fi
@@ -199,6 +204,7 @@ jobs:
           echo "Deployment matrix: ${MATRIX}"
 
   db-prepare:
+    name: DB Prepare · ${{ needs.detect.outputs.deploy_env }}
     needs: detect
     if: needs.detect.outputs.matrix != '{"include":[]}'
     runs-on: ubuntu-latest

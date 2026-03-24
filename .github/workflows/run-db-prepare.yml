@@ -1,4 +1,6 @@
 name: Run db-prepare
+run-name: >-
+  db-prepare · ${{ inputs.server || 'auto' }} · ${{ inputs.ref || 'main' }} · @${{ github.actor }}
 
 on:
   workflow_dispatch:
@@ -29,6 +31,7 @@ env:
 
 jobs:
   run-db-prepare:
+    name: db-prepare · ${{ inputs.server || 'auto' }}
     runs-on: ubuntu-latest
     concurrency:
       group: db-prepare-${{ inputs.ref == 'main' && 'prod' || 'preview' }}
