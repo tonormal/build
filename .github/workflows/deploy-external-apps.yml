@@ -323,6 +323,10 @@ jobs:
           SOURCE_REF="${SOURCE_REF:-}"
           SOURCE_SHA="${SOURCE_SHA:-}"
 
+          echo "Source repository: ${SOURCE_REPOSITORY:-<none>}"
+          echo "Source ref: ${SOURCE_REF:-<none>}"
+          echo "Source sha: ${SOURCE_SHA:-<none>}"
+
           clear_external_source_env() {
             unset JANT_SOURCE_REPO_URL JANT_SOURCE_REF JANT_SOURCE_SHA
             unset JANT_CLOUD_SOURCE_REPO_URL JANT_CLOUD_SOURCE_REF JANT_CLOUD_SOURCE_SHA
