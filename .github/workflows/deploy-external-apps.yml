@@ -173,14 +173,20 @@ jobs:
           echo "STUDIO_DEPLOY_REF=${STUDIO_DEPLOY_REF:-}"
           echo "github.ref_name=${{ github.ref_name }}"
           source scripts/build-lib.sh
-          unset DEPLOY_ENV CURRENT_BRANCH BRANCH_CLEAN CTX_DB_SUFFIX CTX_DNS_SUFFIX CTX_ROOT_DOMAIN CTX_ENV_PREFIX AWS_PARAM_PATH ANSIBLE_TARGET
+          unset DEPLOY_ENV CURRENT_BRANCH BRANCH_CLEAN CTX_DB_SUFFIX CTX_SUBDOMAIN_SUFFIX CTX_SERVICE_SUFFIX CTX_ROOT_DOMAIN CTX_ENV_PREFIX AWS_PARAM_PATH ANSIBLE_TARGET
           detect_environment
           echo "Resolved branch: $CURRENT_BRANCH"
           echo "Resolved env: $DEPLOY_ENV"
           echo "Resolved DB suffix: $CTX_DB_SUFFIX"
-          if [ "${{ needs.detect.outputs.deploy_env }}" = "preview" ] && [ -z "${CTX_DB_SUFFIX:-}" ]; then
-            echo "Preview deployment resolved without CTX_DB_SUFFIX"
-            exit 1
+          echo "Resolved subdomain suffix: ${CTX_SUBDOMAIN_SUFFIX:-}"
+          echo "Resolved service suffix: ${CTX_SERVICE_SUFFIX:-}"
+          if [ "${{ needs.detect.outputs.deploy_env }}" = "preview" ]; then
+            if is_default_preview_branch_name "$CURRENT_BRANCH"; then
+              echo "Default preview branch resolved without suffixes as expected"
+            elif [ -z "${CTX_DB_SUFFIX:-}" ]; then
+              echo "Feature preview deployment resolved without CTX_DB_SUFFIX"
+              exit 1
+            fi
           fi
         env:
           STUDIO_DEPLOY_REF: ${{ needs.detect.outputs.deploy_ref }}
@@ -369,15 +375,14 @@ jobs:
 
           if [ "$SERVICE" = "all" ]; then
             echo "Deploying all external apps..."
-            for app_dir in external-apps/*/; do
-              if bash scripts/external-app-type.sh "${app_dir}" > /dev/null 2>&1; then
-                app=$(basename "$app_dir")
-                echo "Deploying ${app}..."
-                configure_external_source_env "$app"
-                mise run build-${app}
-                mise run deploy-${app}
-              fi
-            done
+            source scripts/external-app-lib.sh
+            while IFS= read -r app; do
+              [ -n "$app" ] || continue
+              echo "Deploying ${app}..."
+              configure_external_source_env "$app"
+              mise run build-${app}
+              mise run deploy-${app}
+            done < <(list_all_external_apps "$PWD")
           else
             echo "Deploying: ${SERVICE}"
             for app in $SERVICE; do
@@ -410,12 +415,11 @@ jobs:
           }
 
           if [ "$SERVICE" = "all" ]; then
-            for app_dir in external-apps/*/; do
-              if bash scripts/external-app-type.sh "${app_dir}" > /dev/null 2>&1; then
-                app=$(basename "$app_dir")
-                run_post_deploy "$app"
-              fi
-            done
+            source scripts/external-app-lib.sh
+            while IFS= read -r app; do
+              [ -n "$app" ] || continue
+              run_post_deploy "$app"
+            done < <(list_all_external_apps "$PWD")
           else
             for app in $SERVICE; do
               run_post_deploy "$app"
@@ -433,18 +437,16 @@ jobs:
           if [ "$SERVICE" = "all" ]; then
             echo "**URLs:**" >> $GITHUB_STEP_SUMMARY
             source scripts/external-app-lib.sh
-            for app_dir in external-apps/*/; do
-              if bash scripts/external-app-type.sh "${app_dir}" > /dev/null 2>&1; then
-                app=$(basename "$app_dir")
-                SUMMARY_DIR="$(get_external_app_work_dir "$app" "$PWD")"
-                SUMMARY_FILE="${SUMMARY_DIR}/deploy-dist/DEPLOY_SUMMARY.txt"
-                if [ -f "$SUMMARY_FILE" ]; then
-                  while IFS= read -r url; do
-                    echo "- [${url}](${url})" >> $GITHUB_STEP_SUMMARY
-                  done < "$SUMMARY_FILE"
-                fi
+            while IFS= read -r app; do
+              [ -n "$app" ] || continue
+              SUMMARY_DIR="$(get_external_app_work_dir "$app" "$PWD")"
+              SUMMARY_FILE="${SUMMARY_DIR}/deploy-dist/DEPLOY_SUMMARY.txt"
+              if [ -f "$SUMMARY_FILE" ]; then
+                while IFS= read -r url; do
+                  echo "- [${url}](${url})" >> $GITHUB_STEP_SUMMARY
+                done < "$SUMMARY_FILE"
               fi
-            done
+            done < <(list_all_external_apps "$PWD")
           else
             echo "**URLs:**" >> $GITHUB_STEP_SUMMARY
             source scripts/external-app-lib.sh
