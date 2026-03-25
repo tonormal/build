@@ -24,7 +24,10 @@ on:
         default: "main"
 
 concurrency:
-  group: deploy-external-${{ github.event.client_payload.sha || github.sha }}
+  group: >-
+    deploy-external-${{ github.event.client_payload.service || inputs.service || 'all' }}-${{
+    github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || github.event.client_payload.source_ref || inputs.ref || github.ref_name || 'main'
+    }}-${{ github.event.client_payload.source_sha || github.event.client_payload.sha || github.sha }}
   cancel-in-progress: false
 
 env:
