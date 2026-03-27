@@ -137,6 +137,10 @@ jobs:
           ALL_SERVICES="${{ steps.detect-changes.outputs.all_services }}"
           CHANGED_SERVICES="${{ steps.detect-changes.outputs.changed_services }}"
           SHARED_CHANGED="${{ steps.detect-changes.outputs.shared_changed }}"
+          ORIG_EVENT="${{ github.event_name }}"
+          if [ "$ORIG_EVENT" = "repository_dispatch" ]; then
+            ORIG_EVENT="${{ github.event.client_payload.event_name }}"
+          fi
 
           check_server_configured() {
             local server="$1"
@@ -154,8 +158,8 @@ jobs:
             fi
           }
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TARGET="${{ inputs.target }}"
+          if [ "$ORIG_EVENT" = "workflow_dispatch" ]; then
+            TARGET="${{ github.event.client_payload.target || inputs.target }}"
 
             if [ "$TARGET" = "all" ]; then
               DEPLOY_SERVICES="$ALL_SERVICES"
