@@ -383,16 +383,14 @@ jobs:
               [ -n "$app" ] || continue
               echo "Deploying ${app}..."
               configure_external_source_env "$app"
-              mise run build-${app}
-              mise run deploy-${app}
+              mise run deploy "$app"
             done < <(list_all_external_apps "$PWD")
           else
             echo "Deploying: ${SERVICE}"
             for app in $SERVICE; do
               echo "Deploying ${app}..."
               configure_external_source_env "$app"
-              mise run build-${app}
-              mise run deploy-${app}
+              mise run deploy "$app"
             done
           fi
         env:
