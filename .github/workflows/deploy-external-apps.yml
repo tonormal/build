@@ -23,13 +23,6 @@ on:
         type: string
         default: "main"
 
-concurrency:
-  group: >-
-    deploy-external-${{ github.event.client_payload.service || inputs.service || 'all' }}-${{
-    github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || github.event.client_payload.source_ref || inputs.ref || github.ref_name || 'main'
-    }}-${{ github.event.client_payload.source_sha || github.event.client_payload.sha || github.sha }}
-  cancel-in-progress: false
-
 env:
   ECR_REGISTRY: 912951144733.dkr.ecr.us-west-2.amazonaws.com
 
@@ -205,6 +198,9 @@ jobs:
     name: Deploy · ${{ github.event.client_payload.service || inputs.service || 'all' }} · ${{ needs.detect.outputs.deploy_env }}
     needs: [detect, db-prepare]
     runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-external-${{ github.event.client_payload.service || inputs.service || 'all' }}-${{ needs.detect.outputs.deploy_env }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
