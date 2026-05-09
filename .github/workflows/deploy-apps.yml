@@ -289,9 +289,13 @@ jobs:
           echo "Resolved branch: $CURRENT_BRANCH"
           echo "Resolved env: $DEPLOY_ENV"
           echo "Resolved DB suffix: $CTX_DB_SUFFIX"
-          if [ "${{ needs.detect.outputs.deploy_env }}" = "preview" ] && [ -z "${CTX_DB_SUFFIX:-}" ]; then
-            echo "Preview deployment resolved without CTX_DB_SUFFIX"
-            exit 1
+          if [ "${{ needs.detect.outputs.deploy_env }}" = "preview" ]; then
+            if is_default_preview_branch_name "$CURRENT_BRANCH"; then
+              echo "Default preview branch resolved without suffixes as expected"
+            elif [ -z "${CTX_DB_SUFFIX:-}" ]; then
+              echo "Feature preview deployment resolved without CTX_DB_SUFFIX"
+              exit 1
+            fi
           fi
         env:
           STUDIO_DEPLOY_REF: ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || inputs.ref || github.ref_name }}
