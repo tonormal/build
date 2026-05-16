@@ -22,6 +22,18 @@ on:
         required: false
         type: string
         default: "main"
+      source_repository:
+        description: "External app source repo (e.g. tonormal/jant-cloud), optional"
+        required: false
+        type: string
+      source_ref:
+        description: "External app source branch/tag, optional"
+        required: false
+        type: string
+      source_sha:
+        description: "External app source commit SHA, optional"
+        required: false
+        type: string
 
 env:
   ECR_REGISTRY: 912951144733.dkr.ecr.us-west-2.amazonaws.com
@@ -394,9 +406,9 @@ jobs:
           BUILDKIT_PROGRESS: plain
           ANSIBLE_SSH_PRIVATE_KEY_FILE: ~/.ssh/id_rsa
           STUDIO_DEPLOY_REF: ${{ needs.detect.outputs.deploy_ref }}
-          SOURCE_REPOSITORY: ${{ github.event.client_payload.source_repository || github.event.client_payload.repository || '' }}
-          SOURCE_REF: ${{ github.event.client_payload.source_ref || github.event.client_payload.deploy_ref || '' }}
-          SOURCE_SHA: ${{ github.event.client_payload.source_sha || github.event.client_payload.sha || '' }}
+          SOURCE_REPOSITORY: ${{ github.event.client_payload.source_repository || github.event.client_payload.repository || inputs.source_repository || '' }}
+          SOURCE_REF: ${{ github.event.client_payload.source_ref || github.event.client_payload.deploy_ref || inputs.source_ref || '' }}
+          SOURCE_SHA: ${{ github.event.client_payload.source_sha || github.event.client_payload.sha || inputs.source_sha || '' }}
 
       - name: Run post-deploy hooks
         if: steps.target.outputs.skip != 'true'
