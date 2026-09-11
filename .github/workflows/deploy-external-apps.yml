@@ -1,7 +1,7 @@
 name: Deploy External Applications
 run-name: >-
   External · ${{ github.event.client_payload.service || inputs.service || 'all' }} ·
-  ${{ github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || github.event.client_payload.source_ref || inputs.ref || github.ref_name || 'main' }} ·
+  ${{ (inputs.source_ref && inputs.source_ref != 'main' && inputs.source_ref) || github.event.client_payload.deploy_ref || github.event.client_payload.head_ref || github.event.client_payload.source_ref || inputs.ref || github.ref_name || 'main' }} ·
   @${{ github.actor }}
 
 on:
