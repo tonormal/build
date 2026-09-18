@@ -43,20 +43,12 @@ jobs:
           repository: tonormal/studio
           token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
 
-      - name: Cache mise
-        uses: actions/cache@v4
-        with:
-          path: ~/.local/share/mise
-          key: mise-${{ runner.os }}-${{ hashFiles('.mise/config.toml') }}
-
-      - name: Install mise
-        run: |
-          curl https://mise.run | sh
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
+      # Installs mise, runs `mise install`, and caches the tools. The hand-rolled
+      # version this replaces piped `curl https://mise.run` into sh, so a failed
+      # download (Recv failure: Connection reset by peer, 2026-09-18) left the
+      # step green and the job died one step later on `mise: command not found`.
       - name: Setup mise
-        run: |
-          mise install
+        uses: jdx/mise-action@v2
 
       - name: Cache Ansible Galaxy dependencies
         uses: actions/cache@v4
