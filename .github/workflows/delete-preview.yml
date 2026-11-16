@@ -1,0 +1,112 @@
+name: Delete Preview
+run-name: >-
+  Delete preview · ${{ github.event.client_payload.service || inputs.service }} ·
+  ${{ github.event.client_payload.branch || inputs.branch }} · @${{ github.actor }}
+
+# Removes one app's preview of one branch from the preview server: its
+# containers, Caddy route and app directory, through studio's
+# `mise run preview-delete <branch> <service> --yes`. jant dispatches it when a
+# pull request closes (preview-site-cleanup.yml), for the jant-site preview that
+# pull request got.
+#
+# A service is always required, so one request never removes every app a branch
+# name happens to have on the server.
+
+on:
+  repository_dispatch:
+    types: [delete-preview]
+
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "External app whose preview to remove (e.g. jant-site)"
+        required: true
+        type: string
+      branch:
+        description: "Branch the preview was deployed from, as pushed (e.g. feat/editor)"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: delete-preview-${{ github.event.client_payload.service || inputs.service }}-${{ github.event.client_payload.branch || inputs.branch }}
+  cancel-in-progress: false
+
+jobs:
+  delete:
+    name: Delete · ${{ github.event.client_payload.service || inputs.service }} · ${{ github.event.client_payload.branch || inputs.branch }}
+    runs-on: ubuntu-latest
+    env:
+      SERVICE: ${{ github.event.client_payload.service || inputs.service }}
+      BRANCH: ${{ github.event.client_payload.branch || inputs.branch }}
+    steps:
+      - name: Check the request
+        run: |
+          if ! [[ "$SERVICE" =~ ^[a-z0-9-]+$ ]]; then
+            echo "::error::service must be an app name like jant-site, got '$SERVICE'."
+            exit 1
+          fi
+          if [ -z "$BRANCH" ]; then
+            echo "::error::branch is required."
+            exit 1
+          fi
+          # main deploys to production and preview deploys without a suffix, so
+          # neither has a branch preview to remove.
+          case "$BRANCH" in
+            main | preview)
+              echo "::error::$BRANCH has no branch preview to remove."
+              exit 1
+              ;;
+          esac
+
+      # A deploy of the same branch still running would recreate the preview
+      # right after it is removed, so wait for it to finish first.
+      - name: Wait for deploys of this branch to finish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="External · ${SERVICE} · ${BRANCH} · "
+          deadline=$(( $(date +%s) + 30 * 60 ))
+          while :; do
+            active="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow deploy-external-apps.yml --limit 50 \
+              --json databaseId,displayTitle,status |
+              jq -r --arg title "$title" \
+                '[.[] | select((.displayTitle | startswith($title)) and .status != "completed")] | length' ||
+              true)"
+            [ "$active" = "0" ] && break
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::A deploy of $SERVICE for $BRANCH is still running after 30 minutes."
+              exit 1
+            fi
+            echo "Waiting for ${active} deploy run(s) of ${SERVICE} for ${BRANCH}..."
+            sleep 30
+          done
+
+      - uses: actions/checkout@v4
+        with:
+          repository: tonormal/studio
+          token: ${{ secrets.STUDIO_ACCESS_TOKEN }}
+          ref: main
+
+      - name: Setup mise
+        uses: jdx/mise-action@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.CI_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.CI_AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      - name: Load SSH key from Parameter Store
+        run: |
+          DEPLOY_SSH_KEY=$(aws ssm get-parameter --name "/studio-dev/DEPLOY_SSH_KEY" --with-decryption --query "Parameter.Value" --output text)
+          mkdir -p ~/.ssh
+          echo "${DEPLOY_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Delete ${{ env.SERVICE }} preview of ${{ env.BRANCH }}
+        run: mise run preview-delete "$BRANCH" "$SERVICE" --yes
